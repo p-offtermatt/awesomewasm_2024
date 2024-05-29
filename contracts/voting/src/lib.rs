@@ -6,3 +6,11 @@ pub mod state;
 pub mod testing;
 
 pub use crate::error::ContractError;
+
+pub use contract::interface::CCGovInterface;
+
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub const CCGOV_NAMESPACE: &str = "ccgov-ns";
+pub const CCGOV_NAME: &str = "ccgov";
+pub const CCGOV_ID: &str = const_format::formatcp!("{CCGOV_NAMESPACE}:{CCGOV_NAME}");

@@ -21,8 +21,11 @@ incremental = false
 overflow-checks = true
 
 [features]
+default = ["export"]
+export = []
 # use library feature to disable all instantiate/execute/query exports
 library = []
+schema = ["abstract-app/schema"]
 
 [package.metadata.scripts]
 optimize = """docker run --rm -v "$(pwd)":/code \
@@ -32,19 +35,24 @@ optimize = """docker run --rm -v "$(pwd)":/code \
 """
 
 [dependencies]
-cosmwasm-schema = "2.0.1"
-cosmwasm-std = { version = "2.0.1", features = [
+cosmwasm-schema = "1.5.3"
+cosmwasm-std = { version = "1.5.3", features = [
   "cosmwasm_1_3",
   # Enable this if you only deploy to chains that have CosmWasm 1.4 or higher
   # "cosmwasm_1_4",
 ] }
-cw-storage-plus = "2.0.0"
-cw2 = "2.0.0"
+cw-storage-plus = "1.2.0"
 schemars = "0.8.16"
 serde = { version = "1.0.197", default-features = false, features = ["derive"] }
 thiserror = { version = "1.0.58" }
 fixed_power = { path = "../fixed_power" }
-cw-multi-test = "2.0.0"
+cw-multi-test = "<2.0.0"
+abstract-app = { version = "0.22.2" }
+const_format = "0.2.32"
+abstract-client = { version = "0.22.0" }
+cw-orch = { version = "0.22.2" }
+abstract-interface = { version = "0.22.0" }
+abstract-cw-orch-polytone = "2.0.0"
 
 [dev-dependencies]
 neutron-sdk = "0.10.0"
