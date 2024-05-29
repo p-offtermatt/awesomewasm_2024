@@ -7,7 +7,7 @@ use cosmwasm_std::{
 // use cw2::set_contract_version;
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, GetVotingPowerMsg, GetVotingPowerResponse, InstantiateMsg, QueryMsg};
+use crate::msg::{ExecuteMsg, GetVotingPowerMsg, GetVotingPowerResponse, InstantiateMsg};
 
 /*
 // version info for migration info
@@ -35,12 +35,8 @@ pub fn execute(
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(_deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
-    match msg {
-        QueryMsg::GetVotingPowerMsg { voter } => {
-            to_json_binary(&GetVotingPowerResponse { power: 1 })
-        }
-    }
+pub fn query(_deps: Deps, _env: Env, msg: GetVotingPowerMsg) -> StdResult<Binary> {
+    to_json_binary(&GetVotingPowerResponse { power: 1 })
 }
 
 #[cfg(test)]
