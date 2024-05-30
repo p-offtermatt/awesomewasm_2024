@@ -42,4 +42,7 @@ pub enum ContractError {
 
     #[error("Unauthorized IBC message")]
     UnauthorizedIbcMessage {},
+
+    #[error("Error while executing IBC message")]
+    IBCError {},
 }

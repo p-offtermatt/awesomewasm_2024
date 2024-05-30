@@ -2,7 +2,7 @@ use std::vec;
 
 use abstract_app::objects::module::ModuleInfo;
 use abstract_app::sdk::{AbstractResponse, IbcInterface};
-use abstract_app::std::ibc::{CallbackResult, ModuleIbcMsg};
+use abstract_app::std::ibc::{CallbackInfo, CallbackResult, ModuleIbcMsg};
 
 use abstract_app::std::ibc_client;
 use abstract_client::Namespace;
@@ -22,13 +22,14 @@ use crate::msg::{
     CCGovExecuteMsg, CCGovIbcMessage, CCGovInstantiateMsg, CCGovMigrateMsg, CCGovQueryMsg,
     GetVotingPowerMsg, GetVotingPowerResponse, QueryExecutedProposalsResponse,
     QueryProposalResponse, QueryTallyResponse, QueryTotalVotedPowerResponse, QueryVoteResponse,
+    RemoteProposalMsg,
 };
 use crate::state::{
     Proposal, Vote, EXECUTED_PROPOSALS, PROP_ID, PROP_MAP, REMOTE_PROPOSALS,
     REMOTE_PROPOSALS_TALLIES, REMOTE_PROPOSAL_ID, REMOTE_PROPOSAL_RESOLVED, VOTE_ID, VOTE_MAP,
     VOTING_PERIOD_IN_DAYS,
 };
-use crate::{APP_VERSION, CCGOV_ID, CCGOV_NAMESPACE};
+use crate::{APP_VERSION, CCGOV_ID, CCGOV_NAMESPACE, QUERY_TALLY_CALLBACK_ID};
 
 use abstract_app::AppContract;
 
@@ -113,9 +114,7 @@ pub fn execute_handler(
             let mut prereq_ids = vec![];
 
             // for each proposal in prereq_proposals, create a remote proposal
-            for (prereq_prop_id, remote_chain, remote_module_addr) in
-                prereq_proposals.iter()
-            {
+            for (prereq_prop_id, remote_chain, remote_module_addr) in prereq_proposals.iter() {
                 let remote_proposal_id = REMOTE_PROPOSAL_ID.load(deps.storage)?;
                 REMOTE_PROPOSALS.save(
                     deps.storage,
@@ -224,17 +223,32 @@ pub fn execute_handler(
 
                     // request the info from the remote chain - we will not be able to resolve this since this goes via IBC,
                     // but we can request the info already and let the user retry once all remote proposals are resolved
-                    
+
                     // create ibc client
                     // load the remote proposal info
-                    let (remote_id, remote_chain, remote_contract_addr) = REMOTE_PROPOSALS.load(deps.storage, *prereq_prop_id)?;
+                    let (remote_id, remote_chain, remote_contract_addr) =
+                        REMOTE_PROPOSALS.load(deps.storage, *prereq_prop_id)?;
 
-                    let wasm_query = WasmQuery::Smart { contract_addr: remote_contract_addr, msg: to_json_binary(&CCGovIbcMessage::QueryTally { prop_id: remote_id })? };
+                    let wasm_query = WasmQuery::Smart {
+                        contract_addr: remote_contract_addr.clone(),
+                        msg: to_json_binary(&CCGovIbcMessage::QueryTally { prop_id: remote_id })?,
+                    };
 
-                    app.ibc_client(deps).ibc_query(remote_chain, wasm_query, callback_info)
-                    // call query method
-                    // create the request with remote contract addr
-                    // give it the query message
+                    let remote_prop_msg = RemoteProposalMsg {
+                        prop_id: *prereq_prop_id,
+                        remote_chain_id: remote_chain.clone(),
+                        remote_contract_addr: remote_contract_addr.clone(),
+                    };
+
+                    let callback_info = CallbackInfo::new(
+                        QUERY_TALLY_CALLBACK_ID,
+                        Some(to_json_binary(&remote_prop_msg)?),
+                    );
+                    app.ibc_client(deps.as_ref()).ibc_query(
+                        remote_chain,
+                        wasm_query,
+                        callback_info,
+                    )?;
                 }
             }
 
@@ -244,45 +258,22 @@ pub fn execute_handler(
                 });
             }
 
-            let mut option_votes = vec![0; prop.options.len()];
+            // get the tally for the proposal
+            let option_votes = query_tally(deps.as_ref(), prop_id)?;
 
-            // check that all prerequisite proposals have been executed
-            for prereq_prop_id in prop.prereq_proposals.iter() {
-                // go over all options
-                // load the remote proposal info
-                let (remote_prop_id, remote_chain, remote_module_id, remote_module_version) =
-                    REMOTE_PROPOSALS.load(deps.storage, prop_id)?;
-
-                for option in prop.options.iter() {
-                    // load the tally for the option
-                    let tally = REMOTE_PROPOSALS_TALLIES
-                        .load(deps.storage, (remote_prop_id, option.clone()))
-                        .unwrap_or(0);
-                }
-            }
-
-            let votes = VOTE_MAP
-                .prefix(prop_id)
-                .range(deps.storage, None, None, cosmwasm_std::Order::Ascending)
-                .collect::<StdResult<Vec<_>>>()?;
-            let mut total_power = 0;
-            let mut option_votes = vec![0; prop.options.len()];
-            for vote in votes {
-                total_power += vote.1.power;
-                let option_index = prop
-                    .options
-                    .iter()
-                    .position(|x| *x == vote.1.option)
-                    .unwrap();
-                option_votes[option_index] += vote.1.power;
+            // find which option has the most votes
+            // make a map from options to their index in the proposal options
+            let mut option_index_map = std::collections::HashMap::new();
+            for (i, option) in prop.options.iter().enumerate() {
+                option_index_map.insert(option.clone(), i);
             }
 
             let mut max_votes = 0;
             let mut max_index = 0;
-            for (i, votes) in option_votes.iter().enumerate() {
+            for (option, votes) in option_votes.iter() {
                 if *votes > max_votes {
                     max_votes = *votes;
-                    max_index = i;
+                    max_index = option_index_map.get(option).unwrap().clone();
                 }
             }
 
@@ -295,8 +286,7 @@ pub fn execute_handler(
             let result = prop.options[max_index].clone();
             let response = Response::new()
                 .add_attribute("action", "execute_proposal")
-                .add_attribute("result", result.clone())
-                .add_attribute("total_power", total_power.to_string());
+                .add_attribute("result", result.clone());
 
             Ok(response)
         }
@@ -343,7 +333,11 @@ pub fn query_handler(
                 executed_proposals,
             })?)
         }
-        CCGovQueryMsg::QueryTally { prop_id } => query_tally(deps, prop_id),
+        CCGovQueryMsg::QueryTally { prop_id } => {
+            let tally = query_tally(deps, prop_id)?;
+
+            Ok(to_json_binary(&QueryTallyResponse { tally })?)
+        }
     }
 }
 
@@ -356,13 +350,28 @@ pub fn migrate_handler(
     Ok(app.response("migrate"))
 }
 
-pub fn query_tally(deps: Deps, prop_id: u64) -> CCGovResult<Binary> {
+pub fn query_tally(deps: Deps, prop_id: u64) -> Result<Vec<(String, u64)>, ContractError> {
     let prop = PROP_MAP.load(deps.storage, prop_id)?;
+
     let mut option_votes = vec![0; prop.options.len()];
 
-    // check that the proposal was executed, thus the votes are final
-    if !prop.executed {
-        return Err(ContractError::VotingPeriodNotEnded {});
+    // check that all prerequisite proposals have been executed
+    for prereq_prop_id in prop.prereq_proposals.iter() {
+        for option in prop.options.iter() {
+            // load the tally for the option
+            let tally = REMOTE_PROPOSALS_TALLIES
+                .load(deps.storage, (*prereq_prop_id, option.clone()))
+                .unwrap_or(0);
+
+            // add the tally to the total
+            let option_index = prop
+                .options
+                .iter()
+                .position(|x| *x == option.clone())
+                .unwrap();
+
+            option_votes[option_index] += tally;
+        }
     }
 
     let votes = VOTE_MAP
@@ -379,13 +388,21 @@ pub fn query_tally(deps: Deps, prop_id: u64) -> CCGovResult<Binary> {
         option_votes[option_index] += vote.1.power;
     }
 
-    let res = option_votes
-        .iter()
-        .zip(prop.options.iter())
-        .map(|(votes, option)| (option.clone(), *votes))
-        .collect::<Vec<_>>();
+    let mut max_votes = 0;
+    let mut max_index = 0;
+    for (i, votes) in option_votes.iter().enumerate() {
+        if *votes > max_votes {
+            max_votes = *votes;
+            max_index = i;
+        }
+    }
 
-    Ok(to_json_binary(&QueryTallyResponse { tally: res })?)
+    Ok(prop
+        .options
+        .iter()
+        .zip(option_votes.iter())
+        .map(|(option, votes)| (option.clone(), *votes))
+        .collect::<Vec<_>>())
 }
 
 pub fn module_ibc_handler(
@@ -406,7 +423,11 @@ pub fn module_ibc_handler(
         CCGovIbcMessage::QueryTally { prop_id } => {
             let tally = query_tally(deps.as_ref(), prop_id)?;
 
-            Ok(app.response("module_ibc").set_data(tally))
+            let query_tally_response = QueryTallyResponse { tally };
+
+            Ok(app
+                .response("module_ibc")
+                .set_data(to_json_binary(&query_tally_response)?))
         }
 
         _ => Err(ContractError::UnauthorizedIbcMessage {}),
@@ -429,11 +450,39 @@ pub fn query_tally_callback(
     app: CCGovApp,
     ibc_msg: IbcResponseMsg,
 ) -> CCGovResult<Response> {
-    match ibc_msg.result {
-        CallbackResult::Query { query, result } => 
-        {
-            result.
+    let callback_info = ibc_msg.msg.unwrap();
+    match from_json::<RemoteProposalMsg>(&callback_info) {
+        Ok(remote_prop_msg) => {
+            let remote_prop_id = remote_prop_msg.prop_id;
+
+            match ibc_msg.result {
+                CallbackResult::Query { query, result } => {
+                    // get the first result (there should only ever be one at a time)
+                    let unwrapped_res = result.unwrap();
+                    let res = unwrapped_res.get(0).unwrap();
+
+                    // get the tally from the response
+                    let remote_tally = from_json::<QueryTallyResponse>(&res)?;
+
+                    for (option, votes) in remote_tally.tally.iter() {
+                        REMOTE_PROPOSALS_TALLIES.save(
+                            deps.storage,
+                            (remote_prop_id, option.clone()),
+                            &votes,
+                        )?;
+                    }
+
+                    REMOTE_PROPOSAL_RESOLVED.save(deps.storage, remote_prop_id, &true)?;
+
+                    Ok(app.response("query_tally_callback"))
+                }
+                CallbackResult::Execute {
+                    initiator_msg: _,
+                    result: _,
+                } => Err(ContractError::UnauthorizedIbcMessage {}),
+                CallbackResult::FatalError(_) => Err(ContractError::IBCError {}),
+            }
         }
-        
+        Err(_) => Err(ContractError::IBCError {}),
     }
 }

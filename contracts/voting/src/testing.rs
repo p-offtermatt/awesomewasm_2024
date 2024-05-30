@@ -4,6 +4,9 @@ use std::ops::{Add, Deref, DerefMut};
 use cosmwasm_std::testing::{mock_env, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR};
 use cosmwasm_std::{coin, coins, Addr, BlockInfo};
 use cw_orch::mock::cw_multi_test::{App, BankKeeper, Contract, ContractWrapper, Executor};
+use cw_orch::mock::MockBase;
+use cw_orch_interchain::{MockBech32InterchainEnv, MockInterchainEnv};
+use std::iter::Iterator;
 
 use crate::contract::{execute_handler, instantiate_handler, query_handler};
 
@@ -15,6 +18,11 @@ use crate::CCGOV_NAMESPACE;
 use fixed_power::msg::{GetVotingPowerMsg, InstantiateMsg as FixedPowerInstantiateMsg};
 
 use abstract_client::{AbstractClient, Application, Environment};
+use abstract_interchain_tests::setup::ibc_connect_polytone_and_abstract;
+use cw_orch_interchain::prelude::*;
+use cw_orch_interchain::InterchainEnv;
+
+use cw_orch::prelude::*;
 
 use cw_orch::{anyhow, prelude::*};
 
@@ -27,11 +35,13 @@ struct TestEnv<Env: CwEnv> {
     app: Application<Env, CCGovInterface<Env>>,
 }
 
-impl TestEnv<MockBech32> {
+pub const A_CHAIN_ID: &str = "harpoon-1";
+pub const B_CHAIN_ID: &str = "neutro-1";
+
+impl TestEnv<MockBase> {
     /// Set up the test environment with an Account that has the App installed
-    fn setup() -> anyhow::Result<TestEnv<MockBech32>> {
+    fn setup(mock: MockBase) -> anyhow::Result<TestEnv<MockBase>> {
         // Create a sender and mock env
-        let mock = MockBech32::new("mock");
         let sender = mock.sender();
         let namespace = Namespace::new(CCGOV_NAMESPACE)?;
 
@@ -60,9 +70,30 @@ impl TestEnv<MockBech32> {
     }
 }
 
+// #[test]
+// fn multi_chain_test -> anyhow::Result<()> {
+//     let sender = Addr::unchecked("sender_for_all_chains");
+//     let interchain = MockInterchainEnv::new(vec![(A_CHAIN_ID, &sender.clone().to_string()), (B_CHAIN_ID, &sender.clone().to_string())]);
+
+//     let a = interchain.chain(A_CHAIN_ID)?;
+//     let b = interchain.chain(B_CHAIN_ID)?;
+
+//     let a_env = TestEnv::setup(a)?;
+//     let b_env = TestEnv::setup(b)?;
+
+//     a_env.enable_ibc()?;
+//     b_env.enable_ibc()?;
+
+//     ibc_connect_polytone_and_abstract(&interchain, "archway-1", "juno-1")?;
+// }
+
 #[test]
 fn fixed_power_test() -> anyhow::Result<()> {
-    let env = TestEnv::setup()?;
+    let mock = MockBase::default();
+
+    let a = interchain.chain(A_CHAIN_ID)?;
+
+    let env = TestEnv::setup(a)?;
     let app = env.app;
 
     let sender: Addr = app.get_chain().sender.clone();

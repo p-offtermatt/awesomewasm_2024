@@ -53,6 +53,8 @@ abstract-client = { version = "0.22.0" }
 cw-orch = { version = "0.22.2" }
 abstract-interface = { version = "0.22.0" }
 abstract-cw-orch-polytone = "2.0.0"
+cw-orch-interchain = { version = "0.1.0" }
+abstract-interchain-tests = "0.22.1"
 
 [dev-dependencies]
 neutron-sdk = "0.10.0"

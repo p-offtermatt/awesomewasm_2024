@@ -101,3 +101,10 @@ pub struct QueryTallyResponse {
     // option, num_votes
     pub tally: Vec<(String, u64)>,
 }
+
+#[cosmwasm_schema::cw_serde]
+pub struct RemoteProposalMsg {
+    pub prop_id: u64,
+    pub remote_chain_id: String,
+    pub remote_contract_addr: String,
+}
