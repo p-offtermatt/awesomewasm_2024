@@ -1131,6 +1131,7 @@ dependencies = [
  "cw-orch",
  "cw-orch-interchain",
  "cw-storage-plus",
+ "env_logger",
  "fixed_power",
  "neutron-sdk",
  "schemars",

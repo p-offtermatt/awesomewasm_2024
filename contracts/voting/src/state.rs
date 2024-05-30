@@ -3,7 +3,7 @@ use cosmwasm_std::Timestamp;
 use cw_storage_plus::Item;
 use cw_storage_plus::Map;
 
-pub const VOTING_PERIOD_IN_DAYS: Item<u64> = Item::new("voting_period");
+pub const VOTING_PERIOD_IN_MINUTES: Item<u64> = Item::new("voting_period");
 
 pub const PROP_ID: Item<u64> = Item::new("prop_id");
 

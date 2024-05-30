@@ -58,3 +58,4 @@ abstract-interchain-tests = "0.22.1"
 
 [dev-dependencies]
 neutron-sdk = "0.10.0"
+env_logger = "0.10.0"

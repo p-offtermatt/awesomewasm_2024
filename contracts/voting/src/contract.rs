@@ -2,15 +2,15 @@ use std::vec;
 
 use abstract_app::objects::module::ModuleInfo;
 use abstract_app::sdk::{AbstractResponse, IbcInterface};
-use abstract_app::std::ibc::{CallbackInfo, CallbackResult, ModuleIbcMsg};
+use abstract_app::std::ibc::{CallbackInfo, CallbackResult, IbcResponseMsg, ModuleIbcMsg};
 
 use abstract_app::std::ibc_client;
 use abstract_client::Namespace;
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    from_json, to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, QueryRequest, Response,
-    StdResult, WasmQuery,
+    from_json, to_json_binary, Binary, Deps, DepsMut, Env, Event, MessageInfo, QueryRequest,
+    Response, StdResult, WasmQuery,
 };
 use cw_multi_test::Contract;
 // use cw2::set_contract_version;
@@ -20,14 +20,14 @@ use abstract_app::objects::module::ModuleVersion::Version;
 use crate::error::ContractError;
 use crate::msg::{
     CCGovExecuteMsg, CCGovIbcMessage, CCGovInstantiateMsg, CCGovMigrateMsg, CCGovQueryMsg,
-    GetVotingPowerMsg, GetVotingPowerResponse, QueryExecutedProposalsResponse,
+    GetVotingPowerMsg, GetVotingPowerResponse, QueryExecutedProposalsResponse, QueryMsg,
     QueryProposalResponse, QueryTallyResponse, QueryTotalVotedPowerResponse, QueryVoteResponse,
     RemoteProposalMsg,
 };
 use crate::state::{
     Proposal, Vote, EXECUTED_PROPOSALS, PROP_ID, PROP_MAP, REMOTE_PROPOSALS,
     REMOTE_PROPOSALS_TALLIES, REMOTE_PROPOSAL_ID, REMOTE_PROPOSAL_RESOLVED, VOTE_ID, VOTE_MAP,
-    VOTING_PERIOD_IN_DAYS,
+    VOTING_PERIOD_IN_MINUTES,
 };
 use crate::{APP_VERSION, CCGOV_ID, CCGOV_NAMESPACE, QUERY_TALLY_CALLBACK_ID};
 
@@ -48,7 +48,8 @@ const APP: CCGovApp = CCGovApp::new(CCGOV_ID, APP_VERSION, None)
     .with_query(query_handler)
     .with_dependencies(&[])
     .with_instantiate(instantiate_handler)
-    .with_module_ibc(module_ibc_handler);
+    .with_module_ibc(module_ibc_handler)
+    .with_ibc_callbacks(&[(QUERY_TALLY_CALLBACK_ID, query_tally_callback)]);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<Chain: cw_orch::environment::CwEnv> abstract_interface::DependencyCreation
@@ -81,7 +82,7 @@ pub fn instantiate_handler(
     VOTE_ID.save(_deps.storage, &0)?;
     REMOTE_PROPOSAL_ID.save(_deps.storage, &0)?;
 
-    VOTING_PERIOD_IN_DAYS.save(_deps.storage, &7)?;
+    VOTING_PERIOD_IN_MINUTES.save(_deps.storage, &1)?;
 
     // set the executed proposals to an empty list
     EXECUTED_PROPOSALS.save(_deps.storage, &Vec::new())?;
@@ -152,7 +153,7 @@ pub fn execute_handler(
             // check that the proposal is still open
             let prop_end_time = prop
                 .start_time
-                .plus_days(VOTING_PERIOD_IN_DAYS.load(deps.storage)?);
+                .plus_minutes(VOTING_PERIOD_IN_MINUTES.load(deps.storage)?);
 
             if prop_end_time <= env.block.time {
                 return Err(ContractError::VotingPeriodHasEnded {});
@@ -165,7 +166,7 @@ pub fn execute_handler(
 
             // check that the voter has not already voted
             if VOTE_MAP
-                .may_load(deps.storage, (prop_id, info.sender.clone().to_string()))
+                .load(deps.storage, (prop_id, info.sender.clone().to_string()))
                 .is_ok()
             {
                 return Err(ContractError::AlreadyVoted {});
@@ -206,7 +207,7 @@ pub fn execute_handler(
             let prop = PROP_MAP.load(deps.storage, prop_id)?;
             let prop_end_time = prop
                 .start_time
-                .plus_days(VOTING_PERIOD_IN_DAYS.load(deps.storage)?);
+                .plus_minutes(VOTING_PERIOD_IN_MINUTES.load(deps.storage)?);
             if prop_end_time > env.block.time {
                 return Err(ContractError::VotingPeriodNotEnded {});
             }
@@ -231,7 +232,9 @@ pub fn execute_handler(
 
                     let wasm_query = WasmQuery::Smart {
                         contract_addr: remote_contract_addr.clone(),
-                        msg: to_json_binary(&CCGovIbcMessage::QueryTally { prop_id: remote_id })?,
+                        msg: to_json_binary(&QueryMsg::Module(CCGovQueryMsg::QueryTally {
+                            prop_id: remote_id,
+                        }))?,
                     };
 
                     let remote_prop_msg = RemoteProposalMsg {
@@ -244,18 +247,18 @@ pub fn execute_handler(
                         QUERY_TALLY_CALLBACK_ID,
                         Some(to_json_binary(&remote_prop_msg)?),
                     );
-                    app.ibc_client(deps.as_ref()).ibc_query(
+                    let msg = app.ibc_client(deps.as_ref()).ibc_query(
                         remote_chain,
                         wasm_query,
                         callback_info,
                     )?;
-                }
-            }
 
-            if !remote_unresolveds.is_empty() {
-                return Err(ContractError::RemoteProposalNotResolved {
-                    prereq_prop_ids: remote_unresolveds,
-                });
+                    return Ok(Response::new()
+                        .add_attribute("action", "execute_proposal")
+                        .add_attribute("result", "remote_proposal_unresolved")
+                        .add_event(Event::new("remote_proposal_unresolved"))
+                        .add_message(msg));
+                }
             }
 
             // get the tally for the proposal
@@ -411,16 +414,16 @@ pub fn module_ibc_handler(
     app: CCGovApp,
     msg: ModuleIbcMsg,
 ) -> Result<Response, ContractError> {
-    let ccgov_namespace = Namespace::new(CCGOV_NAMESPACE)?;
-    cosmwasm_std::ensure_eq!(
-        msg.source_module.namespace,
-        ccgov_namespace,
-        ContractError::Unauthorized {}
-    );
-
+    println!("Module IBC Handler: {:?}", msg);
     let wrapped_msg = from_json(msg.msg)?;
     match wrapped_msg {
-        CCGovIbcMessage::QueryTally { prop_id } => {
+        QueryMsg::Module(CCGovQueryMsg::QueryTally { prop_id }) => {
+            // check that the proposal was executed
+            let executed_props = EXECUTED_PROPOSALS.load(deps.storage)?;
+            if !executed_props.iter().any(|(id, _)| *id == prop_id) {
+                return Err(ContractError::ProposalNotExecuted {});
+            }
+
             let tally = query_tally(deps.as_ref(), prop_id)?;
 
             let query_tally_response = QueryTallyResponse { tally };
@@ -430,17 +433,8 @@ pub fn module_ibc_handler(
                 .set_data(to_json_binary(&query_tally_response)?))
         }
 
-        _ => Err(ContractError::UnauthorizedIbcMessage {}),
+        _ => panic!("Unknown message"),
     }
-}
-
-pub struct IbcResponseMsg {
-    /// The ID chosen by the caller in the `callback_info.id`
-    pub id: String,
-    /// The msg sent with the callback request.
-    /// This is usually used to provide information to the ibc callback function for context
-    pub msg: Option<Binary>,
-    pub result: CallbackResult,
 }
 
 pub fn query_tally_callback(
@@ -453,6 +447,8 @@ pub fn query_tally_callback(
     let callback_info = ibc_msg.msg.unwrap();
     match from_json::<RemoteProposalMsg>(&callback_info) {
         Ok(remote_prop_msg) => {
+            println!("Remote Proposal Msg: {:?}", remote_prop_msg);
+
             let remote_prop_id = remote_prop_msg.prop_id;
 
             match ibc_msg.result {

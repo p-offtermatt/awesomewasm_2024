@@ -45,4 +45,7 @@ pub enum ContractError {
 
     #[error("Error while executing IBC message")]
     IBCError {},
+
+    #[error("Proposal not executed yet")]
+    ProposalNotExecuted {},
 }
